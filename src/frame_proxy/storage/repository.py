@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -120,6 +121,25 @@ class FileRepository:
                 "inspection was not found",
                 details={"inspection_id": inspection_id},
             )
+
+    def mutate_inspection(
+        self,
+        inspection_id: str,
+        mutate: Callable[[InspectionRecord], None],
+    ) -> InspectionRecord:
+        path = self.paths.inspection_record(inspection_id)
+        with FileKeyLock(self.paths.lock_path("inspection", inspection_id)):
+            try:
+                record = InspectionRecord.from_dict(self._read_json(path))
+            except FileNotFoundError:
+                raise NotFoundError(
+                    ErrorCode.INSPECTION_NOT_FOUND,
+                    "inspection was not found",
+                    details={"inspection_id": inspection_id},
+                )
+            mutate(record)
+            atomic_write_json(path, record.as_dict())
+            return record
 
     def create_contact_sheet(self, record: ContactSheetRecord) -> None:
         path = self.paths.contact_sheet_record(record.sheet_id)

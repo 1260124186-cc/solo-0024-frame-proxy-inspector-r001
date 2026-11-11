@@ -83,6 +83,25 @@
       ]
     },
     {
+      "id": "revise-scene-boundaries",
+      "name": "Revise scene boundaries",
+      "entry": "POST /v1/inspections/{inspection_id}/revisions",
+      "steps": [
+        "validate the submission id, base revision, and split/merge operations",
+        "compare-and-swap the accepted revision under the inspection lock",
+        "append the corrected revision with verified contiguous coverage"
+      ],
+      "success": "returns the new accepted revision while older revisions stay readable by number",
+      "failure": "rejects stale bases, conflicting submission ids, and coverage breaks without mutating the stored record",
+      "verification": "the scene revision smoke path splits and merges scenes, replays duplicates, races two reviewers, and re-reads pinned revisions and delivered sheets",
+      "module_ids": [
+        "http",
+        "domain",
+        "service",
+        "storage"
+      ]
+    },
+    {
       "id": "create-contact-sheet",
       "name": "Create contact sheet",
       "entry": "POST /v1/inspections/{inspection_id}/contact-sheets",

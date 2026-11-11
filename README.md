@@ -12,6 +12,12 @@ fingerprints from sampled frames and applies a minimum-scene guard to hard
 cuts. Contact sheet requests are checked against a fixed pixel budget before
 frame decoding starts.
 
+Reviewers can correct the automatic segmentation with traceable scene
+revisions. Every accepted correction is appended as a new revision built from
+split and merge operations; the original automatic result stays readable as
+revision 1, and delivered contact sheets keep the revision they were composed
+from.
+
 Automated unit, integration, and browser tests are intentionally deferred to a
 later task stage. This baseline ships executable workflow checks instead.
 
@@ -51,7 +57,9 @@ The generated file is an uncompressed 24-bit AVI with four color scenes and
 | `PUT` | `/v1/clips/{clip_id}` | admit an `application/x-avi` payload |
 | `GET` | `/v1/clips/{clip_id}` | read clip geometry and digest |
 | `POST` | `/v1/clips/{clip_id}/inspections` | index shot boundaries |
-| `GET` | `/v1/inspections/{inspection_id}` | read an immutable inspection |
+| `GET` | `/v1/inspections/{inspection_id}` | read the accepted revision (pin with `?revision=N`) |
+| `POST` | `/v1/inspections/{inspection_id}/revisions` | submit a split/merge correction |
+| `GET` | `/v1/inspections/{inspection_id}/revisions` | list the revision history |
 | `POST` | `/v1/inspections/{inspection_id}/contact-sheets` | compose a PPM grid |
 | `GET` | `/v1/contact-sheets/{sheet_id}` | read the tile map and digest |
 | `GET` | `/v1/contact-sheets/{sheet_id}/artifact` | fetch the PPM bytes |
@@ -86,6 +94,52 @@ Example contact sheet request:
 `selection` may be `stored`, `midpoint`, or `first`. The rendered PPM is
 binary P6 with a maximum value of 255.
 
+## Scene revisions
+
+An indexed inspection keeps every accepted scene layout as a numbered
+revision. Revision 1 is the automatic detector output and never changes.
+Corrections append new revisions built from ordered `split` and `merge`
+operations:
+
+```json
+{
+  "submission_id": "submission-review-01",
+  "base_revision": 1,
+  "reason": "split the panning shot and merge the tail",
+  "operations": [
+    {"type": "split", "scene_index": 1, "at_frame": 7},
+    {"type": "merge", "from_scene_index": 3, "to_scene_index": 4}
+  ]
+}
+```
+
+Operation indices refer to the scene list as the previous operations left it.
+Every accepted revision must keep complete, gap-free coverage of the clip:
+the first scene starts at frame zero, ranges are contiguous half-open
+intervals, and the final scene ends at the clip frame count.
+
+Concurrency and retry rules:
+
+- `base_revision` must match the currently accepted revision. A submission
+  based on a stale revision is rejected with `409 revision_conflict` so a
+  later correction never silently replaces an accepted one; re-read the
+  inspection and resubmit against the new `accepted_revision`.
+- `submission_id` is the idempotency key. Repeating the same submission
+  returns `200` with the original revision instead of creating a second one;
+  reusing the identifier with different content returns `409 conflict`.
+
+Read defaults and pinning:
+
+- `GET /v1/inspections/{id}` returns the latest accepted revision. The
+  response carries `accepted_revision`, the viewed `revision`, and a compact
+  `revisions` history.
+- `GET /v1/inspections/{id}?revision=N` reads the scenes exactly as accepted
+  in revision `N`, including the original automatic result at revision 1.
+- Contact sheets default to the latest accepted revision and record it as
+  `source_revision`; pass `"revision": N` in the request to compose from an
+  older revision. A delivered sheet keeps its `source_revision`, tile map,
+  and artifact regardless of later corrections.
+
 ## Data layout
 
 `FRAME_PROXY_DATA_DIR` selects the data root. Its default is
@@ -105,7 +159,8 @@ binary P6 with a maximum value of 255.
 
 Records are written through temporary files and renamed into place. Contact
 sheet bytes and their ready record are verified before the record becomes
-visible.
+visible. Inspection records embed their full revision history, so accepting a
+correction is a single atomic record update guarded by the inspection lock.
 
 ## Source layout
 
@@ -121,7 +176,8 @@ tools/
 ├── harness.py
 ├── check_clip_intake.py
 ├── check_shot_index.py
-└── check_contact_sheet.py
+├── check_contact_sheet.py
+└── check_scene_revision.py
 ```
 
 ## Build and workflow checks
@@ -138,6 +194,7 @@ Run one workflow check at a time:
 PYTHONPATH=src:. python3 tools/check_clip_intake.py
 PYTHONPATH=src:. python3 tools/check_shot_index.py
 PYTHONPATH=src:. python3 tools/check_contact_sheet.py
+PYTHONPATH=src:. python3 tools/check_scene_revision.py
 ```
 
 Each check starts a real loopback HTTP server, generates media through the
@@ -150,8 +207,8 @@ state or artifact bytes. Temporary records are removed when the check exits.
 | --- | --- | --- |
 | `FRAME_PROXY_DATA_DIR` | `.frame-proxy-data` | durable data root |
 
-Clip, upload, JSON, frame dimension, frame count, and contact sheet limits are
-declared in `src/frame_proxy/config.py`.
+Clip, upload, JSON, frame dimension, frame count, contact sheet, and revision
+operation limits are declared in `src/frame_proxy/config.py`.
 
 ## Input boundary
 

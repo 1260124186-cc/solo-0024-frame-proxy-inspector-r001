@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from typing import Any
+from urllib.parse import parse_qs, urlsplit
 
 from frame_proxy.config import Settings
 from frame_proxy.domain.errors import ApplicationError, ErrorCode, ValidationError
@@ -9,11 +10,18 @@ from frame_proxy.domain.policies import (
     validate_clip_id,
     validate_contact_sheet_request,
     validate_inspection_request,
+    validate_revision_request,
+)
+from frame_proxy.domain.revisions import (
+    inspection_view,
+    revision_detail,
+    revision_summary,
 )
 from frame_proxy.http.types import ResponseData
 from frame_proxy.service.clips import ClipService
 from frame_proxy.service.contact_sheets import ContactSheetService
 from frame_proxy.service.inspections import InspectionService
+from frame_proxy.service.revisions import RevisionService
 
 
 class RequestRouter:
@@ -23,11 +31,13 @@ class RequestRouter:
         settings: Settings,
         clips: ClipService,
         inspections: InspectionService,
+        revisions: RevisionService,
         contact_sheets: ContactSheetService,
     ) -> None:
         self._settings = settings
         self._clips = clips
         self._inspections = inspections
+        self._revisions = revisions
         self._contact_sheets = contact_sheets
 
     def handle(
@@ -52,12 +62,16 @@ class RequestRouter:
     def _route(
         self,
         method: str,
-        path: str,
+        raw_path: str,
         headers: dict[str, str],
         body: bytes,
     ) -> ResponseData:
-        if path == "/health" and method == "GET":
+        if raw_path == "/health" and method == "GET":
             return ResponseData.json(200, {"status": "ok"})
+
+        split = urlsplit(raw_path)
+        path = split.path
+        query = parse_qs(split.query)
 
         parts = [segment for segment in path.split("/") if segment]
         if len(parts) < 3 or parts[0] != "v1":
@@ -79,13 +93,47 @@ class RequestRouter:
             if len(parts) == 4 and parts[3] == "inspections" and method == "POST":
                 request = validate_inspection_request(self._decode_json(body))
                 record = self._inspections.create(clip_id, request)
-                return ResponseData.json(201, {"inspection": record.as_dict()})
+                return ResponseData.json(201, {"inspection": inspection_view(record)})
 
         if parts[1] == "inspections" and len(parts) >= 3:
             inspection_id = parts[2]
             if len(parts) == 3 and method == "GET":
                 record = self._inspections.get(inspection_id)
-                return ResponseData.json(200, {"inspection": record.as_dict()})
+                revision = self._query_revision(query)
+                return ResponseData.json(
+                    200,
+                    {"inspection": inspection_view(record, revision)},
+                )
+            if len(parts) == 4 and parts[3] == "revisions":
+                if method == "GET":
+                    record = self._inspections.get(inspection_id)
+                    return ResponseData.json(
+                        200,
+                        {
+                            "inspection_id": record.inspection_id,
+                            "accepted_revision": record.accepted_revision,
+                            "revisions": [
+                                revision_summary(item) for item in record.revisions
+                            ],
+                        },
+                    )
+                if method == "POST":
+                    request = validate_revision_request(
+                        self._decode_json(body),
+                        self._settings.max_revision_operations,
+                    )
+                    submission = self._revisions.submit(inspection_id, request)
+                    status = 201 if submission.created else 200
+                    return ResponseData.json(
+                        status,
+                        {
+                            "revision": revision_detail(submission.revision),
+                            "inspection": inspection_view(
+                                submission.record,
+                                submission.revision.revision,
+                            ),
+                        },
+                    )
             if (
                 len(parts) == 4
                 and parts[3] == "contact-sheets"
@@ -109,6 +157,29 @@ class RequestRouter:
                 )
 
         return self._not_found(path)
+
+    def _query_revision(self, query: dict[str, list[str]]) -> int | None:
+        raw = query.get("revision")
+        if not raw:
+            return None
+        if len(raw) != 1:
+            raise ValidationError(
+                "revision query parameter must appear exactly once",
+                details={"field": "revision"},
+            )
+        try:
+            value = int(raw[0])
+        except ValueError as exc:
+            raise ValidationError(
+                "revision must be a positive integer",
+                details={"field": "revision"},
+            ) from exc
+        if value < 1:
+            raise ValidationError(
+                "revision must be a positive integer",
+                details={"field": "revision"},
+            )
+        return value
 
     def _decode_json(self, body: bytes) -> Any:
         if len(body) > self._settings.max_json_bytes:

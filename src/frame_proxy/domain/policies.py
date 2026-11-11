@@ -28,6 +28,37 @@ class ContactSheetRequest:
     gutter: int
     selection: str
     background_rgb: tuple[int, int, int]
+    revision: int | None
+
+
+@dataclass(frozen=True, slots=True)
+class RevisionOperation:
+    kind: str
+    scene_index: int | None = None
+    at_frame: int | None = None
+    from_scene_index: int | None = None
+    to_scene_index: int | None = None
+
+    def as_dict(self) -> dict[str, Any]:
+        if self.kind == "split":
+            return {
+                "type": "split",
+                "scene_index": self.scene_index,
+                "at_frame": self.at_frame,
+            }
+        return {
+            "type": "merge",
+            "from_scene_index": self.from_scene_index,
+            "to_scene_index": self.to_scene_index,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class RevisionRequest:
+    submission_id: str
+    base_revision: int
+    operations: tuple[RevisionOperation, ...]
+    reason: str | None
 
 
 def validate_identifier(value: str, field_name: str) -> str:
@@ -88,6 +119,35 @@ def _integer(
     return raw
 
 
+def _required_integer(
+    body: dict[str, Any],
+    key: str,
+    minimum: int,
+    maximum: int,
+) -> int:
+    raw = body.get(key)
+    if isinstance(raw, bool) or not isinstance(raw, int):
+        raise ValidationError(f"{key} must be an integer", details={"field": key})
+    if not minimum <= raw <= maximum:
+        raise ValidationError(
+            f"{key} must be between {minimum} and {maximum}",
+            details={"field": key},
+        )
+    return raw
+
+
+def _optional_revision(body: dict[str, Any]) -> int | None:
+    raw = body.get("revision")
+    if raw is None:
+        return None
+    if isinstance(raw, bool) or not isinstance(raw, int) or raw < 1:
+        raise ValidationError(
+            "revision must be a positive integer",
+            details={"field": "revision"},
+        )
+    return raw
+
+
 def validate_inspection_request(body: Any) -> InspectionRequest:
     value = _require_object(body)
     inspection_id = validate_identifier(
@@ -131,5 +191,70 @@ def validate_contact_sheet_request(body: Any) -> ContactSheetRequest:
         gutter=_integer(value, "gutter", 6, 0, 20),
         selection=selection,
         background_rgb=_parse_color(value.get("background", "#20252c")),
+        revision=_optional_revision(value),
+    )
+
+
+def _validate_operation(item: Any) -> RevisionOperation:
+    if not isinstance(item, dict):
+        raise ValidationError(
+            "each operation must be an object",
+            details={"field": "operations"},
+        )
+    kind = item.get("type")
+    if kind == "split":
+        return RevisionOperation(
+            kind="split",
+            scene_index=_required_integer(item, "scene_index", 0, 1_000_000),
+            at_frame=_required_integer(item, "at_frame", 1, 1_000_000_000),
+        )
+    if kind == "merge":
+        operation = RevisionOperation(
+            kind="merge",
+            from_scene_index=_required_integer(item, "from_scene_index", 0, 1_000_000),
+            to_scene_index=_required_integer(item, "to_scene_index", 0, 1_000_000),
+        )
+        if operation.to_scene_index <= operation.from_scene_index:
+            raise ValidationError(
+                "merge requires to_scene_index greater than from_scene_index",
+                details={"field": "operations"},
+            )
+        return operation
+    raise ValidationError(
+        "operation type must be split or merge",
+        details={"field": "operations"},
+    )
+
+
+def validate_revision_request(body: Any, max_operations: int) -> RevisionRequest:
+    value = _require_object(body)
+    submission_id = validate_identifier(
+        str(value.get("submission_id", "")),
+        "submission_id",
+    )
+    base_revision = _required_integer(value, "base_revision", 1, 1_000_000)
+    raw_operations = value.get("operations")
+    if not isinstance(raw_operations, list) or not raw_operations:
+        raise ValidationError(
+            "operations must be a non-empty list",
+            details={"field": "operations"},
+        )
+    if len(raw_operations) > max_operations:
+        raise ValidationError(
+            "operations exceed the configured limit",
+            details={"field": "operations", "max_operations": max_operations},
+        )
+    operations = tuple(_validate_operation(item) for item in raw_operations)
+    reason = value.get("reason")
+    if reason is not None and (not isinstance(reason, str) or len(reason) > 200):
+        raise ValidationError(
+            "reason must be a string of at most 200 characters",
+            details={"field": "reason"},
+        )
+    return RevisionRequest(
+        submission_id=submission_id,
+        base_revision=base_revision,
+        operations=operations,
+        reason=reason,
     )
 

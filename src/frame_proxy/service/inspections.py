@@ -8,7 +8,7 @@ from frame_proxy.domain.errors import (
     ErrorCode,
     MediaValidationError,
 )
-from frame_proxy.domain.models import InspectionRecord
+from frame_proxy.domain.models import InspectionRecord, SceneRevisionRecord, utc_now
 from frame_proxy.domain.policies import (
     InspectionRequest,
     validate_clip_id,
@@ -77,6 +77,20 @@ class InspectionService:
             record.sampled_frames = list(result.sampled_frames)
             record.cut_frames = list(result.cut_frames)
             record.scenes = list(result.scenes)
+            record.revisions = [
+                SceneRevisionRecord(
+                    revision=1,
+                    kind="automatic",
+                    scenes=list(result.scenes),
+                    cut_frames=list(result.cut_frames),
+                    base_revision=None,
+                    operations=[],
+                    submission_id=None,
+                    reason="automatic shot detection",
+                    created_at=utc_now(),
+                )
+            ]
+            record.accepted_revision = 1
             transition_inspection(record, "indexed", reason="scene ranges verified")
             self._repository.update_inspection(record)
             return record

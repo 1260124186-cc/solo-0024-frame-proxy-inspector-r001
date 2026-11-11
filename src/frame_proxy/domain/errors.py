@@ -16,6 +16,9 @@ class ErrorCode(str, Enum):
     FRAME_DECODE = "frame_decode_failed"
     CONTACT_SHEET_BUDGET = "contact_sheet_budget_exceeded"
     INVALID_STATE = "invalid_state_transition"
+    REVISION_NOT_FOUND = "revision_not_found"
+    REVISION_CONFLICT = "revision_conflict"
+    SCENE_COVERAGE_INVALID = "scene_coverage_invalid"
     STORAGE = "storage_failure"
     INTERNAL = "internal_failure"
 
@@ -97,5 +100,18 @@ class StateError(ApplicationError):
             message,
             status=409,
             details=details,
+        )
+
+
+class RevisionConflictError(ApplicationError):
+    def __init__(self, *, accepted_revision: int, base_revision: int) -> None:
+        super().__init__(
+            ErrorCode.REVISION_CONFLICT,
+            "base revision does not match the accepted revision",
+            status=409,
+            details={
+                "accepted_revision": accepted_revision,
+                "base_revision": base_revision,
+            },
         )
 

@@ -16,6 +16,7 @@ class Settings:
     max_frame_count: int = 3000
     max_sheet_pixels: int = 250_000
     max_sheet_scenes: int = 36
+    max_revision_operations: int = 128
     request_timeout_seconds: float = 30.0
 
     @classmethod

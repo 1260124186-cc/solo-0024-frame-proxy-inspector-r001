@@ -8,6 +8,7 @@ from frame_proxy.domain.errors import (
 )
 from frame_proxy.domain.models import ContactSheetRecord
 from frame_proxy.domain.policies import ContactSheetRequest, validate_identifier
+from frame_proxy.domain.revisions import resolve_revision
 from frame_proxy.domain.transitions import transition_contact_sheet
 from frame_proxy.media.avi import probe_avi
 from frame_proxy.media.contact import compose_grid, plan_grid
@@ -33,9 +34,11 @@ class ContactSheetService:
                 "contact sheets require an indexed inspection",
                 details={"state": inspection.state},
             )
+        source = resolve_revision(inspection, request.revision)
+        scenes = list(source.scenes)
         clip = self._repository.get_clip(inspection.clip_id)
         plan = plan_grid(
-            scene_count=len(inspection.scenes),
+            scene_count=len(scenes),
             source_width=clip.width,
             source_height=clip.height,
             request=request,
@@ -59,6 +62,7 @@ class ContactSheetService:
             artifact_name="sheet.ppm",
             artifact_digest=None,
             tile_map=[],
+            source_revision=source.revision,
         )
         self._repository.create_contact_sheet(record)
         transition_contact_sheet(record, "compositing", reason="layout reserved")
@@ -68,7 +72,7 @@ class ContactSheetService:
             media = self._repository.get_clip_media(clip.clip_id)
             descriptor = probe_avi(media)
             frames: dict[int, Frame] = {}
-            for scene in inspection.scenes:
+            for scene in scenes:
                 if request.selection == "first":
                     frame_index = scene.start_frame
                 elif request.selection == "midpoint":
@@ -84,7 +88,7 @@ class ContactSheetService:
                 )
             result = compose_grid(
                 plan=plan,
-                scenes=tuple(inspection.scenes),
+                scenes=tuple(scenes),
                 frames=frames,
                 background_rgb=request.background_rgb,
                 selection=request.selection,
